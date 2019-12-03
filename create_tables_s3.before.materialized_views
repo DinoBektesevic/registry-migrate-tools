@@ -1,0 +1,267 @@
+CREATE TABLE dataset_type (
+	dataset_type_name VARCHAR(128) PRIMARY KEY, 
+	storage_class VARCHAR(64) NOT NULL 
+);
+CREATE TABLE dataset_type_dimensions (
+	dataset_type_name VARCHAR(128) REFERENCES dataset_type (dataset_type_name), 
+	dimension_name VARCHAR(32) NOT NULL
+);
+CREATE TABLE dataset_type_metadata (
+	dataset_type_name VARCHAR(128) REFERENCES dataset_type (dataset_type_name),
+	metadata_name VARCHAR(32) NOT NULL
+);
+CREATE SEQUENCE execution_id_seq;
+CREATE TABLE execution (
+	execution_id INTEGER NOT NULL PRIMARY KEY DEFAULT nextval('execution_id_seq'), 
+	start_time  TIMESTAMP WITHOUT TIME ZONE, 
+	end_time TIMESTAMP WITHOUT TIME ZONE, 
+	host VARCHAR(64)
+);
+ALTER SEQUENCE execution_id_seq OWNED BY execution.execution_id;
+CREATE TABLE instrument (
+	instrument VARCHAR(16) PRIMARY KEY, 
+	visit_max INTEGER, 
+	exposure_max INTEGER, 
+	detector_max INTEGER
+);
+CREATE TABLE physical_filter (
+	instrument VARCHAR(16) NOT NULL, 
+	physical_filter VARCHAR(16) NOT NULL, 
+	abstract_filter VARCHAR(16), 
+	PRIMARY KEY (instrument, physical_filter)
+);
+CREATE TABLE detector (
+	instrument VARCHAR(16) REFERENCES instrument (instrument), 
+	detector INTEGER NOT NULL, 
+	name VARCHAR(32), 
+	raft VARCHAR(32), 
+	purpose VARCHAR(32), 
+	PRIMARY KEY (instrument, detector)
+);
+CREATE TABLE visit (
+	instrument VARCHAR(16) REFERENCES instrument (instrument), 
+	visit INTEGER NOT NULL, 
+	physical_filter VARCHAR(16) NOT NULL, 
+	datetime_begin TIMESTAMP WITHOUT TIME ZONE,
+	datetime_end TIMESTAMP WITHOUT TIME ZONE,
+	exposure_time FLOAT, 
+	seeing FLOAT, 
+	region BYTEA, 
+	PRIMARY KEY (instrument, visit), 
+	FOREIGN KEY(instrument, physical_filter) REFERENCES physical_filter (instrument, physical_filter)
+);
+CREATE TABLE exposure (
+	instrument VARCHAR(16) REFERENCES instrument (instrument), 
+	exposure INTEGER NOT NULL, 
+	visit INTEGER, 
+	physical_filter VARCHAR(16) NOT NULL, 
+	snap INTEGER, 
+	datetime_begin TIMESTAMP WITHOUT TIME ZONE, 
+	datetime_end TIMESTAMP WITHOUT TIME ZONE, 
+	exposure_time FLOAT, 
+	dark_time FLOAT, 
+	PRIMARY KEY (instrument, exposure), 
+	FOREIGN KEY(instrument) REFERENCES instrument (instrument), 
+	FOREIGN KEY(instrument, visit) REFERENCES visit (instrument, visit), 
+	FOREIGN KEY(instrument, physical_filter) REFERENCES physical_filter (instrument, physical_filter)
+);
+CREATE TABLE skymap (
+	skymap VARCHAR(64) PRIMARY KEY,
+	hash VARCHAR(56) NOT NULL,
+	tract_max INTEGER,
+	patch_nx_max INTEGER,
+	patch_ny_max INTEGER,
+	UNIQUE (hash)
+);
+CREATE TABLE tract (
+	skymap VARCHAR(64) NOT NULL, 
+	tract INTEGER NOT NULL, 
+	ra FLOAT, 
+	dec FLOAT, 
+	region BYTEA, 
+	PRIMARY KEY (skymap, tract), 
+	FOREIGN KEY(skymap) REFERENCES skymap (skymap)
+);
+CREATE TABLE patch (
+	skymap VARCHAR(64) NOT NULL, 
+	tract INTEGER NOT NULL, 
+	patch INTEGER NOT NULL, 
+	cell_x INTEGER NOT NULL, 
+	cell_y INTEGER NOT NULL, 
+	region  BYTEA, 
+	PRIMARY KEY (skymap, tract, patch), 
+	FOREIGN KEY(skymap) REFERENCES skymap (skymap), 
+	FOREIGN KEY(skymap, tract) REFERENCES tract (skymap, tract)
+);
+CREATE TABLE calibration_label (
+	instrument VARCHAR(16) NOT NULL, 
+	calibration_label VARCHAR(128) NOT NULL, 
+	valid_first TIMESTAMP WITHOUT TIME ZONE, 
+	valid_last TIMESTAMP WITHOUT TIME ZONE, 
+	PRIMARY KEY (instrument, calibration_label), 
+	FOREIGN KEY(instrument) REFERENCES instrument (instrument)
+);
+CREATE TABLE visit_detector_region (
+	instrument VARCHAR(16) NOT NULL, 
+	visit INTEGER NOT NULL, 
+	detector INTEGER NOT NULL, 
+	region  BYTEA, 
+	PRIMARY KEY (instrument, visit, detector), 
+	FOREIGN KEY(instrument, visit) REFERENCES visit (instrument, visit), 
+	FOREIGN KEY(instrument, detector) REFERENCES detector (instrument, detector)
+);
+CREATE TABLE visit_detector_skypix_join (
+	instrument VARCHAR(16) NOT NULL, 
+	visit INTEGER NOT NULL, 
+	detector INTEGER NOT NULL, 
+	skypix INTEGER NOT NULL, 
+	FOREIGN KEY(instrument, visit, detector) REFERENCES visit_detector_region (instrument, visit, detector)
+);
+CREATE TABLE patch_skypix_join (
+	skymap VARCHAR(64) NOT NULL, 
+	tract INTEGER NOT NULL, 
+	patch INTEGER NOT NULL, 
+	skypix INTEGER NOT NULL, 
+	FOREIGN KEY(skymap, tract, patch) REFERENCES patch (skymap, tract, patch)
+);
+CREATE TABLE s3datastorerecords(
+  path VARCHAR(256),
+  formatter VARCHAR(128),
+  storage_class VARCHAR(64),
+  file_size INTEGER,
+  checksum VARCHAR(128),
+  dataset_id INTEGER NOT NULL PRIMARY KEY,
+  CONSTRAINT ck_s3datastorerecords_path_len CHECK (length(path)<=256), 
+  CONSTRAINT ck_s3datastorerecords_formatter_len CHECK (length(formatter)<=128), 
+  CONSTRAINT ck_s3datastorerecords_storage_class_len CHECK (length(storage_class)<=64), 
+  CONSTRAINT ck_s3datastorerecords_checksum_len CHECK (length(checksum)<=128)
+);
+/* insert this first, we will add the two additional constraints later, but this schema */
+/* schema makes it impossible to insert cleanly, unless triggers are disabled. */
+CREATE TABLE run (
+	execution_id INTEGER PRIMARY KEY REFERENCES execution (execution_id) ON DELETE CASCADE,
+	collection VARCHAR(128)
+);
+CREATE TABLE quantum (
+	execution_id INTEGER PRIMARY KEY REFERENCES execution (execution_id) ON DELETE CASCADE,
+	task VARCHAR(256),
+	run_id INTEGER REFERENCES run (execution_id) ON DELETE CASCADE
+);
+CREATE SEQUENCE dataset_id_seq;
+CREATE TABLE dataset (
+	dataset_id INTEGER NOT NULL PRIMARY KEY DEFAULT nextval('dataset_id_seq'),
+	dataset_type_name VARCHAR(128) REFERENCES dataset_type (dataset_type_name),
+	run_id INTEGER REFERENCES run (execution_id),
+	quantum_id INTEGER REFERENCES quantum (execution_id) ON DELETE SET NULL,
+	dataset_ref_hash VARCHAR(44) NOT NULL,
+	instrument VARCHAR(16) REFERENCES instrument (instrument),
+	abstract_filter VARCHAR(8),
+	physical_filter VARCHAR(16),
+	detector INTEGER,
+	visit INTEGER,
+	exposure INTEGER,
+	skypix INTEGER,
+	skymap VARCHAR(32) REFERENCES skymap (skymap),
+	tract INTEGER,
+	patch INTEGER,
+	label VARCHAR(128),
+	calibration_label VARCHAR(128),
+	FOREIGN KEY(instrument, physical_filter) REFERENCES physical_filter (instrument, physical_filter), 
+	FOREIGN KEY(instrument, detector) REFERENCES detector (instrument, detector), 
+	FOREIGN KEY(instrument, visit) REFERENCES visit (instrument, visit), 
+	FOREIGN KEY(instrument, exposure) REFERENCES exposure (instrument, exposure), 
+	FOREIGN KEY(instrument, calibration_label) REFERENCES calibration_label (instrument, calibration_label), 
+	FOREIGN KEY(skymap, tract) REFERENCES tract (skymap, tract), 
+	FOREIGN KEY(skymap, tract, patch) REFERENCES patch (skymap, tract, patch)
+);
+ALTER SEQUENCE dataset_id_seq OWNED BY dataset.dataset_id;
+/* add the missing run constraints now */
+ALTER TABLE run ADD COLUMN environment_id INTEGER REFERENCES dataset (dataset_id) ON DELETE SET NULL;
+ALTER TABLE run ADD COLUMN pipeline_id INTEGER REFERENCES dataset (dataset_id) ON DELETE SET NULL;
+CREATE TABLE dataset_composition (
+	parent_dataset_id INTEGER REFERENCES dataset (dataset_id) ON DELETE CASCADE,
+	component_dataset_id INTEGER REFERENCES dataset (dataset_id) ON DELETE CASCADE, 
+	component_name VARCHAR(32) NOT NULL, 
+	PRIMARY KEY (parent_dataset_id, component_dataset_id)
+);
+CREATE TABLE dataset_collection (
+	dataset_id INTEGER REFERENCES dataset (dataset_id) ON DELETE CASCADE,
+	dataset_ref_hash VARCHAR(44) NOT NULL, 
+	collection VARCHAR(128) NOT NULL, 
+	PRIMARY KEY (dataset_id, collection), 
+	UNIQUE (dataset_ref_hash, collection)
+);
+CREATE TABLE dataset_consumers (
+	quantum_id INTEGER REFERENCES quantum (execution_id) ON DELETE CASCADE,
+	dataset_id INTEGER REFERENCES dataset (dataset_id) ON DELETE CASCADE,
+	actual BOOLEAN NOT NULL, 
+	CHECK (actual IN (true, false))
+);
+CREATE TABLE dataset_storage (
+	dataset_id INTEGER REFERENCES dataset (dataset_id),
+	datastore_name VARCHAR(256) NOT NULL, 
+	PRIMARY KEY (dataset_id, datastore_name)
+);
+CREATE VIEW abstract_filter AS SELECT  DISTINCT abstract_filter FROM physical_filter;
+CREATE VIEW exposure_calibration_label_join AS SELECT  DISTINCT
+    exposure.instrument, exposure.exposure, calibration_label.calibration_label
+FROM
+    exposure INNER JOIN calibration_label ON (
+        exposure.instrument = calibration_label.instrument
+        AND
+        exposure.datetime_begin >= calibration_label.valid_first
+        AND
+        exposure.datetime_end <= calibration_label.valid_last
+);
+CREATE VIEW visit_skypix_join AS SELECT  DISTINCT instrument, visit, skypix FROM visit_detector_skypix_join;
+CREATE VIEW tract_skypix_join AS SELECT  DISTINCT skymap, tract, skypix FROM patch_skypix_join;
+CREATE VIEW visit_detector_patch_join AS SELECT  DISTINCT
+  visit_detector_skypix_join.instrument,
+  visit_detector_skypix_join.visit,
+  visit_detector_skypix_join.detector,
+  patch_skypix_join.skymap,
+  patch_skypix_join.tract,
+  patch_skypix_join.patch
+FROM
+  visit_detector_skypix_join INNER JOIN patch_skypix_join ON (
+    visit_detector_skypix_join.skypix = patch_skypix_join.skypix
+);
+CREATE VIEW visit_patch_join AS SELECT  DISTINCT
+  visit_skypix_join.instrument,
+  visit_skypix_join.visit,
+  patch_skypix_join.skymap,
+  patch_skypix_join.tract,
+  patch_skypix_join.patch
+FROM
+  visit_skypix_join INNER JOIN patch_skypix_join ON (
+    visit_skypix_join.skypix = patch_skypix_join.skypix
+  );
+CREATE VIEW visit_detector_tract_join AS SELECT  DISTINCT
+  visit_detector_skypix_join.instrument,
+  visit_detector_skypix_join.visit,
+  visit_detector_skypix_join.detector,
+  tract_skypix_join.skymap,
+  tract_skypix_join.tract
+FROM
+  visit_detector_skypix_join INNER JOIN tract_skypix_join ON (
+    visit_detector_skypix_join.skypix = tract_skypix_join.skypix
+  );
+CREATE VIEW visit_tract_join AS SELECT  DISTINCT
+  visit_skypix_join.instrument,
+  visit_skypix_join.visit,
+  tract_skypix_join.skymap,
+  tract_skypix_join.tract
+FROM
+  visit_skypix_join INNER JOIN tract_skypix_join ON (
+    visit_skypix_join.skypix = tract_skypix_join.skypix
+);
+CREATE VIEW visit_calibration_label_join AS SELECT  DISTINCT
+    visit.instrument, visit.visit, calibration_label.calibration_label
+FROM
+    visit INNER JOIN calibration_label ON (
+        visit.instrument = calibration_label.instrument
+        AND
+        visit.datetime_begin >= calibration_label.valid_first
+        AND
+        visit.datetime_end <= calibration_label.valid_last
+);
